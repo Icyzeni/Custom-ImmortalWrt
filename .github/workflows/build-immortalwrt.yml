@@ -1,0 +1,194 @@
+name: Build ImmortalWrt x86/64 with ImageBuilder
+
+on:
+  repository_dispatch:
+  workflow_dispatch:
+    inputs:
+      ssh:
+        description: 'SSH connection to Actions'
+        required: false
+        default: 'false'
+  schedule:
+    - cron: 0 8 * * 5
+  watch:
+    types: started
+
+env:
+  IMAGEBUILDER_URL: https://downloads.immortalwrt.org/releases/24.10.2/targets/x86/64/immortalwrt-imagebuilder-24.10.2-x86-64.Linux-x86_64.tar.zst
+  CUSTOM_PACKAGES_CONF: config/packages.conf
+  CUSTOM_REPOSITORIES_CONF: config/repositories.conf
+  CUSTOM_FILES_PATH: files
+  UPLOAD_FIRMWARE: true
+  UPLOAD_RELEASE: true
+  TZ: Asia/Shanghai
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@main
+
+    - name: Initialization environment
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc
+        sudo -E apt-get -qq update
+        sudo -E apt-get -qq install build-essential libncurses5-dev libncursesw5-dev zlib1g-dev gawk git gettext libssl-dev xsltproc rsync wget unzip python3 -y
+        sudo -E apt-get -qq autoremove --purge
+        sudo -E apt-get -qq clean
+        sudo timedatectl set-timezone "$TZ"
+
+    - name: Download ImageBuilder
+      run: |
+        wget -O imagebuilder.tar.zst $IMAGEBUILDER_URL
+        sudo apt-get install -y zstd
+        tar --use-compress-program=unzstd -xf imagebuilder.tar.zst
+        mv immortalwrt-imagebuilder-* imagebuilder
+        cd imagebuilder
+        ls -la
+
+    - name: Load custom configuration
+      run: |
+        cd imagebuilder
+        
+        # 添加自定义软件源
+        if [ -f "$GITHUB_WORKSPACE/$CUSTOM_REPOSITORIES_CONF" ]; then
+          echo "添加自定义软件源..."
+          while IFS= read -r line; do
+            # 跳过空行和注释行
+            [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+            echo "$line" >> repositories.conf
+            echo "添加软件源: $line"
+          done < "$GITHUB_WORKSPACE/$CUSTOM_REPOSITORIES_CONF"
+        fi
+        
+        # 更新软件包列表
+        make info
+
+    - name: SSH connection to Actions
+      uses: P3TERX/ssh2actions@v1.0.0
+      if: (github.event.inputs.ssh == 'true' && github.event.inputs.ssh  != 'false') || contains(github.event.action, 'ssh')
+      env:
+        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+
+    - name: Prepare packages list
+      run: |
+        cd imagebuilder
+        
+        # 读取软件包配置
+        PACKAGES=""
+        REMOVE_PACKAGES=""
+        
+        if [ -f "$GITHUB_WORKSPACE/$CUSTOM_PACKAGES_CONF" ]; then
+          echo "处理软件包配置..."
+          while IFS= read -r line; do
+            # 跳过空行和注释行
+            [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+            
+            # 处理移除软件包（以 - 开头）
+            if [[ "$line" =~ ^[[:space:]]*- ]]; then
+              package=$(echo "$line" | sed 's/^[[:space:]]*-[[:space:]]*//')
+              REMOVE_PACKAGES="$REMOVE_PACKAGES -$package"
+              echo "移除软件包: $package"
+            else
+              # 处理安装软件包
+              package=$(echo "$line" | sed 's/^[[:space:]]*//' | sed 's/[[:space:]]*$//')
+              PACKAGES="$PACKAGES $package"
+              echo "安装软件包: $package"
+            fi
+          done < "$GITHUB_WORKSPACE/$CUSTOM_PACKAGES_CONF"
+        fi
+        
+        # 保存到环境变量
+        echo "PACKAGES=$PACKAGES" >> $GITHUB_ENV
+        echo "REMOVE_PACKAGES=$REMOVE_PACKAGES" >> $GITHUB_ENV
+        
+        echo "最终软件包列表:"
+        echo "安装: $PACKAGES"
+        echo "移除: $REMOVE_PACKAGES"
+
+    - name: Copy custom files
+      run: |
+        if [ -d "$GITHUB_WORKSPACE/$CUSTOM_FILES_PATH" ]; then
+          echo "复制自定义文件..."
+          cp -r "$GITHUB_WORKSPACE/$CUSTOM_FILES_PATH" imagebuilder/
+        fi
+
+    - name: Build firmware
+      id: build
+      run: |
+        cd imagebuilder
+        
+        # 构建固件
+        echo "开始构建固件..."
+        make image PROFILE=generic \
+          PACKAGES="$PACKAGES $REMOVE_PACKAGES" \
+          ROOTFS_PARTSIZE=512 \
+          FILES=files/ || exit 1
+        
+        echo "status=success" >> $GITHUB_OUTPUT
+        echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
+
+    - name: Check space usage
+      if: (!cancelled())
+      run: df -hT
+
+    - name: Organize files
+      id: organize
+      if: steps.build.outputs.status == 'success' && !cancelled()
+      run: |
+        cd imagebuilder/bin/targets/*/*
+        rm -rf packages
+        echo "FIRMWARE=$PWD" >> $GITHUB_ENV
+        echo "status=success" >> $GITHUB_OUTPUT
+        
+        # 显示生成的文件
+        echo "生成的固件文件:"
+        ls -la
+
+    - name: Upload firmware directory
+      uses: actions/upload-artifact@main
+      if: steps.organize.outputs.status == 'success' && !cancelled()
+      with:
+        name: ImmortalWrt_firmware${{ env.FILE_DATE }}
+        path: ${{ env.FIRMWARE }}
+
+    - name: Generate release tag
+      id: tag
+      if: env.UPLOAD_RELEASE == 'true' && !cancelled()
+      run: |
+        echo "release_tag=$(date +"%Y.%m.%d-%H%M")" >> $GITHUB_OUTPUT
+        touch release.txt
+        echo "📦 ImmortalWrt x86/64 固件" >> release.txt
+        echo "🔧 构建时间: $(date)" >> release.txt
+        echo "🎯 基于 ImageBuilder 快速构建" >> release.txt
+        echo "status=success" >> $GITHUB_OUTPUT
+
+    - name: Upload firmware to release
+      uses: softprops/action-gh-release@v1
+      if: steps.tag.outputs.status == 'success' && !cancelled()
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ steps.tag.outputs.release_tag }}
+        body_path: release.txt
+        files: ${{ env.FIRMWARE }}/*
+
+    - name: Delete workflow runs
+      uses: GitRML/delete-workflow-runs@main
+      with:
+        retain_days: 1
+        keep_minimum_runs: 3
+
+    - name: Remove old Releases
+      uses: dev-drprasad/delete-older-releases@v0.1.0
+      if: env.UPLOAD_RELEASE == 'true' && !cancelled()
+      with:
+        keep_latest: 3
+        delete_tags: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
