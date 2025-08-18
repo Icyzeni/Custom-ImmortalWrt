@@ -123,37 +123,29 @@ jobs:
       run: |
         cd imagebuilder
         
-        # 显示构建信息
-        echo "=== 构建信息 ==="
-        echo "ImageBuilder 版本信息:"
+        # 显示构建环境信息
+        echo "=== 构建环境信息 ==="
+        pwd
         ls -la
-        echo "软件包列表: $PACKAGES"
-        echo "移除软件包: $REMOVE_PACKAGES"
+        df -h
         
-        # 检查并验证软件包
-        echo "=== 验证软件包 ==="
-        if [ -n "$PACKAGES" ]; then
-          for pkg in $PACKAGES; do
-            if make info | grep -q "^$pkg "; then
-              echo "✓ $pkg - 可用"
-            else
-              echo "✗ $pkg - 不可用，将跳过"
-              PACKAGES=$(echo "$PACKAGES" | sed "s/$pkg//g")
-            fi
-          done
-        fi
+        # 显示软件包信息
+        echo "=== 软件包信息 ==="
+        echo "安装软件包: [$PACKAGES]"
+        echo "移除软件包: [$REMOVE_PACKAGES]"
         
-        # 清理软件包列表
-        PACKAGES=$(echo "$PACKAGES" | tr -s ' ' | sed 's/^ *//;s/ *$//')
-        echo "最终软件包列表: $PACKAGES"
-        
-        # 构建固件 - 使用最简单的方式
+        # 使用最基础的构建方式
         echo "=== 开始构建固件 ==="
-        if [ -n "$PACKAGES" ] || [ -n "$REMOVE_PACKAGES" ]; then
-          make image PROFILE=generic PACKAGES="$PACKAGES $REMOVE_PACKAGES" || exit 1
-        else
+        set -x  # 启用命令跟踪
+        
+        # 先尝试不带任何自定义软件包的构建
+        make image PROFILE=generic || {
+          echo "基础构建失败，尝试清理后重试..."
+          make clean
           make image PROFILE=generic || exit 1
-        fi
+        }
+        
+        set +x  # 关闭命令跟踪
         
         echo "status=success" >> $GITHUB_OUTPUT
         echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
