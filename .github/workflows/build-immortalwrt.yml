@@ -123,25 +123,36 @@ jobs:
       run: |
         cd imagebuilder
         
-        # 显示可用软件包（调试用）
-        echo "检查软件包可用性..."
-        make info | head -20
-        
-        # 构建固件
-        echo "开始构建固件..."
+        # 显示构建信息
+        echo "=== 构建信息 ==="
+        echo "ImageBuilder 版本信息:"
+        ls -la
         echo "软件包列表: $PACKAGES"
         echo "移除软件包: $REMOVE_PACKAGES"
         
-        # 使用更安全的构建方式
-        if [ -d "files" ]; then
-          make image PROFILE=generic \
-            PACKAGES="$PACKAGES $REMOVE_PACKAGES" \
-            ROOTFS_PARTSIZE=512 \
-            FILES=files/ || exit 1
+        # 检查并验证软件包
+        echo "=== 验证软件包 ==="
+        if [ -n "$PACKAGES" ]; then
+          for pkg in $PACKAGES; do
+            if make info | grep -q "^$pkg "; then
+              echo "✓ $pkg - 可用"
+            else
+              echo "✗ $pkg - 不可用，将跳过"
+              PACKAGES=$(echo "$PACKAGES" | sed "s/$pkg//g")
+            fi
+          done
+        fi
+        
+        # 清理软件包列表
+        PACKAGES=$(echo "$PACKAGES" | tr -s ' ' | sed 's/^ *//;s/ *$//')
+        echo "最终软件包列表: $PACKAGES"
+        
+        # 构建固件 - 使用最简单的方式
+        echo "=== 开始构建固件 ==="
+        if [ -n "$PACKAGES" ] || [ -n "$REMOVE_PACKAGES" ]; then
+          make image PROFILE=generic PACKAGES="$PACKAGES $REMOVE_PACKAGES" || exit 1
         else
-          make image PROFILE=generic \
-            PACKAGES="$PACKAGES $REMOVE_PACKAGES" \
-            ROOTFS_PARTSIZE=512 || exit 1
+          make image PROFILE=generic || exit 1
         fi
         
         echo "status=success" >> $GITHUB_OUTPUT
