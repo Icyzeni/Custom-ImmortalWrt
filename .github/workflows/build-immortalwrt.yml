@@ -123,12 +123,26 @@ jobs:
       run: |
         cd imagebuilder
         
+        # 显示可用软件包（调试用）
+        echo "检查软件包可用性..."
+        make info | head -20
+        
         # 构建固件
         echo "开始构建固件..."
-        make image PROFILE=generic \
-          PACKAGES="$PACKAGES $REMOVE_PACKAGES" \
-          ROOTFS_PARTSIZE=512 \
-          FILES=files/ || exit 1
+        echo "软件包列表: $PACKAGES"
+        echo "移除软件包: $REMOVE_PACKAGES"
+        
+        # 使用更安全的构建方式
+        if [ -d "files" ]; then
+          make image PROFILE=generic \
+            PACKAGES="$PACKAGES $REMOVE_PACKAGES" \
+            ROOTFS_PARTSIZE=512 \
+            FILES=files/ || exit 1
+        else
+          make image PROFILE=generic \
+            PACKAGES="$PACKAGES $REMOVE_PACKAGES" \
+            ROOTFS_PARTSIZE=512 || exit 1
+        fi
         
         echo "status=success" >> $GITHUB_OUTPUT
         echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
