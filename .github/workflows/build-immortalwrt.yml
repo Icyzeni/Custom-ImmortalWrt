@@ -54,15 +54,12 @@ jobs:
       run: |
         cd imagebuilder
         
-        # 添加自定义软件源
+        # 直接覆盖软件源配置文件
         if [ -f "$GITHUB_WORKSPACE/$CUSTOM_REPOSITORIES_CONF" ]; then
-          echo "添加自定义软件源..."
-          while IFS= read -r line; do
-            # 跳过空行和注释行
-            [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
-            echo "$line" >> repositories.conf
-            echo "添加软件源: $line"
-          done < "$GITHUB_WORKSPACE/$CUSTOM_REPOSITORIES_CONF"
+          echo "覆盖软件源配置文件..."
+          cp "$GITHUB_WORKSPACE/$CUSTOM_REPOSITORIES_CONF" repositories.conf
+          echo "软件源配置已更新"
+          cat repositories.conf
         fi
         
         # 更新软件包列表
@@ -85,22 +82,14 @@ jobs:
         
         if [ -f "$GITHUB_WORKSPACE/$CUSTOM_PACKAGES_CONF" ]; then
           echo "处理软件包配置..."
-          while IFS= read -r line; do
-            # 跳过空行和注释行
-            [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
-            
-            # 处理移除软件包（以 - 开头）
-            if [[ "$line" =~ ^[[:space:]]*- ]]; then
-              package=$(echo "$line" | sed 's/^[[:space:]]*-[[:space:]]*//')
-              REMOVE_PACKAGES="$REMOVE_PACKAGES -$package"
-              echo "移除软件包: $package"
-            else
-              # 处理安装软件包
-              package=$(echo "$line" | sed 's/^[[:space:]]*//' | sed 's/[[:space:]]*$//')
-              PACKAGES="$PACKAGES $package"
-              echo "安装软件包: $package"
-            fi
-          done < "$GITHUB_WORKSPACE/$CUSTOM_PACKAGES_CONF"
+          # 提取安装软件包（不以#或-开头的行）
+          PACKAGES=$(grep -v '^[[:space:]]*#' "$GITHUB_WORKSPACE/$CUSTOM_PACKAGES_CONF" | grep -v '^[[:space:]]*-' | grep -v '^[[:space:]]*$' | tr '\n' ' ')
+          
+          # 提取移除软件包（以-开头的行）
+          REMOVE_PACKAGES=$(grep '^[[:space:]]*-' "$GITHUB_WORKSPACE/$CUSTOM_PACKAGES_CONF" | tr '\n' ' ')
+          
+          echo "安装软件包: $PACKAGES"
+          echo "移除软件包: $REMOVE_PACKAGES"
         fi
         
         # 保存到环境变量
@@ -134,15 +123,15 @@ jobs:
         echo "安装软件包: [$PACKAGES]"
         echo "移除软件包: [$REMOVE_PACKAGES]"
         
-        # 使用最基础的构建方式
+        # 使用自定义软件包构建
         echo "=== 开始构建固件 ==="
         set -x  # 启用命令跟踪
         
-        # 先尝试不带任何自定义软件包的构建
-        make image PROFILE=generic || {
-          echo "基础构建失败，尝试清理后重试..."
+        # 使用自定义软件包构建
+        make image PROFILE=generic PACKAGES="$PACKAGES $REMOVE_PACKAGES" || {
+          echo "构建失败，尝试清理后重试..."
           make clean
-          make image PROFILE=generic || exit 1
+          make image PROFILE=generic PACKAGES="$PACKAGES $REMOVE_PACKAGES" || exit 1
         }
         
         set +x  # 关闭命令跟踪
@@ -183,17 +172,22 @@ jobs:
         echo "📦 ImmortalWrt x86/64 固件" >> release.txt
         echo "🔧 构建时间: $(date)" >> release.txt
         echo "🎯 基于 ImageBuilder 快速构建" >> release.txt
+        echo "📋 包含软件包:" >> release.txt
+        echo "\`\`\`" >> release.txt
+        echo "$PACKAGES" | tr ' ' '\n' | sort | grep -v '^$' >> release.txt
+        echo "\`\`\`" >> release.txt
         echo "status=success" >> $GITHUB_OUTPUT
 
     - name: Upload firmware to release
-      uses: softprops/action-gh-release@v1
+      uses: ncipollo/release-action@v1
       if: steps.tag.outputs.status == 'success' && !cancelled()
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
-        tag_name: ${{ steps.tag.outputs.release_tag }}
-        body_path: release.txt
-        files: ${{ env.FIRMWARE }}/*
+        name: ImmortalWrt固件 ${{ steps.tag.outputs.release_tag }}
+        tag: ${{ steps.tag.outputs.release_tag }}
+        bodyFile: release.txt
+        artifacts: "${{ env.FIRMWARE }}/*"
+        token: ${{ secrets.GITHUB_TOKEN }}
+        allowUpdates: true
 
     - name: Delete workflow runs
       uses: GitRML/delete-workflow-runs@main
